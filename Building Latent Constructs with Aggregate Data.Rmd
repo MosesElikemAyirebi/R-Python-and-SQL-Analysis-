@@ -1,0 +1,194 @@
+---
+title: "Building Latent Constructs with Aggregate Data"
+subtitle: "Exploratory Data Assignment"
+author: "Moses Ayirebi"
+date: "February 16, 2026"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+geometry: margin=1in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(lubridate)
+library(scales)
+library(sqldf)
+```
+
+```{r load-data, include=FALSE}
+# Load the Boston 311 Service Request dataset
+boston_311 <- read_csv("boston_311.csv.csv")
+
+# Create key variables from previous assignments
+boston_311 <- boston_311 %>%
+  mutate(
+    response_time_days = as.numeric(difftime(CLOSED_DT, OPEN_DT, units = "days")),
+    day_of_week = wday(OPEN_DT, label = TRUE, abbr = FALSE)
+  )
+```
+
+## Background
+
+Last week, I proposed Neighborhood Responsiveness as a latent construct, the idea that some parts of Boston may receive faster or more consistent service from the city than others. I identified pothole reports per capita as one manifest variable and looked at mean response times as a second. But all of that work was based on individual 311 requests, which made it hard to step back and compare neighborhoods against each other.
+
+This week, I am taking the next step. Using the aggregate() and sqldf() commands, I can collapse 1.67 million individual service requests into neighborhood-level summaries. Instead of looking at one pothole report at a time, I can now calculate a score for each neighborhood. How many requests it generates, how long they take to resolve, how many sit open for over a month. From there I can start to see whether these numbers move together in a way that points to a real pattern of unequal service.
+
+The question is still the same one I started with: does the city of Boston respond to all neighborhoods equally? But now I have better tools to answer it.
+
+## Analysis
+
+### Aggregating Data to the Neighborhood Level
+
+To measure Neighborhood Responsiveness, I need to move from individual service requests to neighborhood-level summaries. The aggregate() function in R lets me do exactly this. It takes a variable, groups it by a category (in this case, neighborhood), and applies a summary function like mean() or length().
+
+The first step is to calculate three things for each neighborhood: the total number of 311 requests, the mean response time, and the median response time.
+
+```{r aggregate-neighborhood}
+# Use aggregate() to calculate neighborhood-level summaries
+# Total requests per neighborhood
+total_requests <- aggregate(response_time_days ~ BRA_PD, 
+                            data = boston_311, 
+                            FUN = length)
+names(total_requests) <- c("Neighborhood", "Total_Requests")
+
+# Mean response time per neighborhood
+mean_response <- aggregate(response_time_days ~ BRA_PD, 
+                           data = boston_311, 
+                           FUN = function(x) round(mean(x, na.rm = TRUE), 2))
+names(mean_response) <- c("Neighborhood", "Mean_Response_Days")
+
+# Median response time per neighborhood
+median_response <- aggregate(response_time_days ~ BRA_PD, 
+                             data = boston_311, 
+                             FUN = function(x) median(x, na.rm = TRUE))
+names(median_response) <- c("Neighborhood", "Median_Response_Days")
+
+# Merge them together
+neighborhood_summary <- merge(total_requests, mean_response, by = "Neighborhood")
+neighborhood_summary <- merge(neighborhood_summary, median_response, by = "Neighborhood")
+
+# Sort by total requests
+neighborhood_summary <- neighborhood_summary %>% arrange(desc(Total_Requests))
+
+neighborhood_summary
+```
+
+Each row in this table now represents a neighborhood rather than an individual request. This matters because Neighborhood Responsiveness is measured at the neighborhood level. One pothole request on its own cannot tell us much about how well the city serves an area, but the average across thousands of requests starts to show a pattern.
+
+### Using sqldf for More Complex Aggregations
+
+While aggregate() works well for simple summaries, sqldf() lets us write SQL queries directly on our data. This is useful when we want to calculate multiple things at once or apply more specific filters. The query below builds a pothole-specific neighborhood profile in a single step, calculating not just volume and average response time but also how many cases took over 30 days and what percentage of total cases that represents.
+
+```{r sqldf-pothole}
+# Use sqldf to build a pothole-specific neighborhood profile
+pothole_profile <- sqldf("
+  SELECT 
+    BRA_PD AS Neighborhood,
+    COUNT(*) AS Pothole_Requests,
+    ROUND(AVG(response_time_days), 2) AS Mean_Response_Days,
+    SUM(CASE WHEN response_time_days > 30 THEN 1 ELSE 0 END) AS Slow_Cases,
+    ROUND(SUM(CASE WHEN response_time_days > 30 THEN 1.0 ELSE 0.0 END) / COUNT(*) * 100, 1) AS Pct_Slow
+  FROM boston_311
+  WHERE (LOWER(TYPE) LIKE '%pothole%' OR LOWER(REASON) LIKE '%pothole%')
+    AND BRA_PD IS NOT NULL
+    AND response_time_days >= 0
+    AND response_time_days <= 365
+  GROUP BY BRA_PD
+  HAVING COUNT(*) >= 50
+  ORDER BY Mean_Response_Days DESC
+")
+
+pothole_profile
+```
+
+This gives us a richer picture of each neighborhood's experience with pothole repairs. We now have not just how many potholes were reported and how long they took on average, but also how many cases were "slow" (taking more than 30 days) and what percentage of total cases that represents. A neighborhood where 20% of pothole repairs take over a month tells a very different story than one where only 5% do, even if their averages look similar.
+
+### Building the Latent Construct: Combining Indicators
+
+With the aggregated data, I can now start to see Neighborhood Responsiveness as a construct built from multiple indicators. Using the notation from previous weeks:
+
+$$\eta = \text{Neighborhood Responsiveness (latent)}$$
+
+Measured by:
+
+- $X_1$ = Total pothole requests (volume of need)
+- $X_2$ = Mean response time in days (speed of service)
+- $X_3$ = Percentage of slow cases over 30 days (reliability of service)
+
+If these three indicators are capturing the same underlying construct, I would expect them to be related. Neighborhoods with more requests might also have longer response times and a higher percentage of slow cases. The dot plot below tests this directly.
+
+### Dot Plot: Volume vs. Response Time
+
+The dot plot below shows the relationship between the number of pothole requests a neighborhood generates and the mean response time for those requests. Each dot represents one neighborhood. If responsiveness is truly worse in high-volume areas, I would expect to see dots trending upward from left to right.
+
+```{r dot-plot, fig.width=10, fig.height=7}
+# Dot plot showing relationship between pothole volume and response time
+ggplot(pothole_profile, aes(x = Pothole_Requests, y = Mean_Response_Days)) +
+  geom_point(aes(size = Pct_Slow), color = "#d7191c", alpha = 0.8) +
+  geom_text(aes(label = Neighborhood), hjust = -0.1, vjust = -0.5, size = 3) +
+  scale_size_continuous(name = "% Slow Cases", range = c(3, 10)) +
+  labs(
+    title = "Do Neighborhoods with More Potholes Wait Longer for Repairs?",
+    subtitle = "Each dot is a neighborhood; size shows percentage of cases taking 30+ days",
+    x = "Number of Pothole Requests",
+    y = "Mean Response Time (Days)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom")
+```
+What this plot shows is interesting. The relationship between volume and speed is not a simple upward line. East Boston has by far the most pothole requests but one of the fastest response times. Central and Charlestown have fewer requests but the longest waits. This suggests that response time is not driven by how many requests a neighborhood generates. Something else is going on, whether it is the type of agency handling repairs, how resources are allocated, or the complexity of the work in certain areas.
+
+The size of each dot adds a third dimension: the percentage of slow cases. Central and Charlestown not only have the longest average wait times but also some of the largest dots, meaning a higher share of their cases drag on past 30 days. These are the neighborhoods where the pattern of poor responsiveness is strongest.
+
+### Dot Plot: Percentage of Slow Cases vs. Total Volume
+
+To see whether a different pair of indicators tells a different story, this second dot plot looks at the percentage of slow cases against total volume.
+```{r dot-plot-2, fig.width=10, fig.height=7}
+# Second dot plot: slow case percentage vs volume
+ggplot(pothole_profile, aes(x = Pothole_Requests, y = Pct_Slow)) +
+  geom_point(aes(size = Mean_Response_Days), color = "#ff6600", alpha = 0.9) +
+  geom_text(aes(label = Neighborhood), hjust = -0.1, vjust = -0.5, size = 3) +
+  scale_size_continuous(name = "Mean Response (Days)", range = c(3, 12), 
+                        breaks = c(2, 4, 6, 8, 10)) +
+  labs(
+    title = "Which Neighborhoods Have the Most Delayed Pothole Repairs?",
+    subtitle = "Each dot is a neighborhood; size shows mean response time in days",
+    x = "Number of Pothole Requests",
+    y = "Percentage of Cases Taking 30+ Days (%)"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(legend.position = "bottom",
+        legend.key.size = unit(1, "cm"))
+```
+
+This second plot confirms what the first one suggested. Charlestown and Central stand out again with the highest percentage of slow cases, and their dots are also among the largest, meaning their mean response times are high too. Meanwhile East Boston sits in the bottom right corner with the most requests but one of the lowest percentages of slow cases. When two different plots point to the same neighborhoods as outliers, that convergence strengthens the case that something real is happening in those areas, not just statistical noise.
+
+## Interpretation
+
+### What This Means for Boston's Communities
+
+By aggregating individual 311 requests to the neighborhood level, I can now see patterns that were invisible when looking at one request at a time. The question is no longer "how long did it take to fix this one pothole?" but "how does this neighborhood's experience compare to others across the city?"
+
+Living in South Dorchester, I know what it feels like to report an issue and wonder if anyone is coming. The aggregated data lets me put numbers behind that feeling. South Dorchester shows up with 1,690 pothole requests and a mean response time of 5.3 days, which puts it in the middle of the pack. But neighborhoods like Central and Charlestown, with fewer requests, are waiting almost twice as long. That raises a question I did not expect: maybe the neighborhoods generating the most complaints are not the ones being ignored. Maybe the ones with fewer reports but longer waits are the ones that deserve more attention.
+
+The dot plot is particularly revealing because it shows whether my manifest variables move together. If they did, that would support the idea that Neighborhood Responsiveness is a single construct. But the fact that volume and speed do not line up neatly tells me that responsiveness is more complicated than I initially assumed. There may be multiple dimensions to how the city serves its residents, and one number alone cannot capture it.
+
+This is what latent construct measurement looks like in practice. I started with an idea I could not observe directly, defined indicators that should reflect it, aggregated the data to the right level, and then checked whether the indicators behaved the way I expected. The fact that they did not perfectly align is not a failure. It is useful information that tells me Neighborhood Responsiveness may have more than one dimension, and that future work should consider separating speed of response from volume of need rather than treating them as a single thing.
+
+### Sources of Bias
+
+The same sources of bias from last week still apply. Reporting bias, population data mismatch, seasonal confounds, and construct validity concerns. But aggregation introduces an additional consideration:
+
+**Ecological fallacy.** When I calculate a mean response time for a neighborhood, I am describing the average experience, not every resident's experience. A neighborhood with a low average might still have pockets of severe delays. Aggregating can smooth over important variation within neighborhoods, making conditions look more uniform than they actually are.
+
+**Small sample sizes.** I filtered for neighborhoods with at least 50 pothole requests, but some neighborhoods may still have too few cases to produce reliable averages. A neighborhood with 51 requests and one extreme outlier could look very different from its true pattern.
+
+### Transferability
+
+The aggregate() and sqldf() commands used here are not specific to 311 data or to Boston. Any dataset that contains individual-level records and a grouping variable can be collapsed into aggregate summaries using the same approach. This is a foundational step in latent construct measurement. Before we can measure something we cannot observe directly, we need to create summary indicators at the right unit of analysis. Whether the question is about school performance, hospital quality, or neighborhood livability, the process is the same: define the construct, identify manifest variables, aggregate to the appropriate level, and examine whether the indicators converge.
+
+The next step will be to explore whether these aggregated indicators are correlated strongly enough to justify treating them as reflections of a single underlying construct, and to consider how population data might adjust the picture.
+
+

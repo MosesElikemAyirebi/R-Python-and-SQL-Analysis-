@@ -1,0 +1,281 @@
+---
+title: "BOSTON 311 SERVICE REQUEST DATA"
+subtitle: "Mid-Term 1"
+author: "Moses Ayirebi"
+date: "February 4, 2025"
+output: 
+  pdf_document:
+    latex_engine: xelatex
+geometry: margin=0.9in
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, message = FALSE, warning = FALSE)
+library(tidyverse)
+library(lubridate)
+library(scales)
+```
+
+```{r load-data}
+boston_311 <- read_csv("boston_311.csv.csv")
+
+boston_311 <- boston_311 %>%
+  mutate(
+    response_time_days = as.numeric(CLOSED_DT - OPEN_DT),
+    day_of_week = wday(OPEN_DT, label = TRUE, abbr = FALSE),
+    case_status = case_when(
+      response_time_days < 0 ~ "Impossible",
+      response_time_days > 365 ~ "Zombie",
+      is.na(response_time_days) ~ "Still Open",
+      TRUE ~ "Valid"
+    )
+  )
+```
+
+## Overview
+
+When Boston residents report a pothole, request graffiti removal, needle removal or flag an abandoned vehicle, how quickly does the city respond and does it depend on where you live? This Read-Me Document explores whether response times reveal patterns of service delivery across neighborhoods.
+
+This document introduces the Boston 311 Service Request Dataset from the City of Boston's Analyze Boston data portal. The dataset contains `r format(nrow(boston_311), big.mark = ",")` service requests submitted by residents between 2020 and 2024. Each row represents one request for city services and includes `r ncol(boston_311)` variables capturing request type, timing, location, and resolution status.
+
+The analysis uses R functions including `median()`, `mean()`, `max()`, `filter()`, `n_distinct()`, `count()`, `table()`, and `wday()` for data exploration, and `geom_col()` and `geom_histogram()` for visualization.
+
+## Fun Facts
+
+**1.** Half of all requests close within `r median(boston_311$response_time_days, na.rm = TRUE)` day, but the average is `r round(mean(boston_311$response_time_days, na.rm = TRUE), 1)` days, meaning a small number of extremely delayed cases drag up the mean dramatically. *Functions: `median()`, `mean()`*
+
+**2.** South Dorchester generates the most 311 requests (`r format(boston_311 %>% filter(BRA_PD == "South Dorchester") %>% nrow(), big.mark = ",")` total, `r round(boston_311 %>% filter(BRA_PD == "South Dorchester") %>% nrow() / nrow(boston_311) * 100, 1)`% of all cases)- but is this because the neighborhood has more problems, or because residents there are more likely to report issues? *Functions: `filter()`, `count()`*
+
+**3.** The 311 system uses `r n_distinct(boston_311$REASON)` broad request categories. The most common is "`r boston_311 %>% count(REASON, sort = TRUE) %>% slice(1) %>% pull(REASON)`." *Functions: `n_distinct()`, `count()`*
+
+**4.** Weekday requests account for `r round(boston_311 %>% filter(!day_of_week %in% c("Saturday", "Sunday")) %>% nrow() / nrow(boston_311) * 100, 1)`% of all submissions. Tuesday is busiest (`r round(boston_311 %>% filter(day_of_week == "Tuesday") %>% nrow() / nrow(boston_311) * 100, 1)`%), Sunday slowest (`r round(boston_311 %>% filter(day_of_week == "Sunday") %>% nrow() / nrow(boston_311) * 100, 1)`%). *Functions: `wday()`, `count()`*
+
+**5.** The longest time to close a request was `r format(max(boston_311$response_time_days, na.rm = TRUE), big.mark = ",")` days—over `r round(max(boston_311$response_time_days, na.rm = TRUE) / 365, 1)` years. *Function: `max()`*
+
+**6.** There are `r format(boston_311 %>% filter(response_time_days < 0) %>% nrow(), big.mark = ",")` records with negative response times, a data quality issue analysts should filter out. *Functions: `filter()`, `nrow()`*
+
+**7.** Over `r format(boston_311 %>% filter(response_time_days > 365) %>% nrow(), big.mark = ",")` requests took more than one year to close, suggesting systemic delays. *Functions: `filter()`, `nrow()`*
+
+**8.** The top three request sources are `r boston_311 %>% count(SOURCE, sort = TRUE) %>% slice(1) %>% pull(SOURCE)`, `r boston_311 %>% count(SOURCE, sort = TRUE) %>% slice(2) %>% pull(SOURCE)`, and `r boston_311 %>% count(SOURCE, sort = TRUE) %>% slice(3) %>% pull(SOURCE)`. *Function: `table()`*
+
+\newpage
+
+## Visualizations
+
+### Figure 1: Mean Response Time by Neighborhood
+
+This chart compares average response times across Boston's ten highest-volume neighborhoods. Using the mean (instead of median) reveals variation hidden by the median's 0-1 day range. *Function: `geom_col()`*
+
+```{r viz-1, fig.width=6, fig.height=3.8, fig.align='center'}
+top_neighborhoods <- boston_311 %>%
+  filter(!is.na(BRA_PD)) %>%
+  count(BRA_PD, sort = TRUE) %>%
+  head(10) %>%
+  pull(BRA_PD)
+
+neighborhood_stats <- boston_311 %>%
+  filter(BRA_PD %in% top_neighborhoods, 
+         response_time_days >= 0, 
+         response_time_days <= 365) %>%
+  group_by(BRA_PD) %>%
+  summarise(
+    mean_response = mean(response_time_days, na.rm = TRUE),
+    request_count = n()
+  )
+
+neighborhood_stats %>%
+  ggplot(aes(x = reorder(BRA_PD, mean_response), y = mean_response)) +
+  geom_col(aes(fill = mean_response), color = "white", width = 0.7) +
+  geom_text(aes(label = paste0(round(mean_response, 1), " days")), 
+            hjust = -0.1, size = 2.5, fontface = "bold") +
+  geom_text(aes(label = paste0("n=", format(request_count, big.mark = ","))), 
+            y = 0.02, hjust = 0, size = 2, color = "white") +
+  coord_flip() +
+  scale_fill_gradient(low = "#9B59B6", high = "#E74C3C", guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(title = "Average Response Times Vary Across Neighborhoods",
+       subtitle = "Top 10 neighborhoods by volume",
+       x = NULL, y = "Mean Response Time (Days)") +
+  theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(face = "bold", size = 10),
+        plot.subtitle = element_text(size = 8, color = "gray40"),
+        axis.text.y = element_text(size = 8, face = "bold"),
+        panel.grid.major.y = element_blank())
+```
+Neighborhoods with higher mean response times, like East Boston and Jamaica Plain, likely have more "zombie cases" dragging up their averages. This raises an important equity question: are some communities waiting longer for city services, or do certain request types concentrated in those areas simply take longer to resolve?
+
+ \newpage 
+ 
+### Figure 2: Distribution of Response Times
+
+Most requests are resolved quickly, but a long tail reveals some take weeks. *Function: `geom_histogram()`*
+
+```{r viz-2, fig.width=6, fig.height=3.2, fig.align='center'}
+valid_responses <- boston_311$response_time_days[
+  boston_311$response_time_days >= 0 & 
+  boston_311$response_time_days <= 30]
+
+median_val <- median(valid_responses, na.rm = TRUE)
+mean_val <- mean(valid_responses, na.rm = TRUE)
+
+boston_311 %>%
+  filter(response_time_days >= 0, response_time_days <= 30) %>%
+  ggplot(aes(x = response_time_days)) +
+  geom_histogram(binwidth = 1, fill = "#9B59B6", color = "white") +
+  geom_vline(xintercept = median_val, linetype = "dashed", 
+             color = "#E74C3C", linewidth = 1) +
+  geom_vline(xintercept = mean_val, linetype = "dotted", 
+             color = "#3498DB", linewidth = 1) +
+  annotate("label", x = 15, y = 500000, 
+           label = paste0("Median = ", round(median_val, 1), " day"), 
+           fill = "#E74C3C", color = "white", 
+           fontface = "bold", size = 2.5, label.size = 0) +
+  annotate("label", x = 15, y = 380000, 
+           label = paste0("Mean = ", round(mean_val, 1), " days"), 
+           fill = "#3498DB", color = "white", 
+           fontface = "bold", size = 2.5, label.size = 0) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Most Requests Resolved Within One Week",
+       subtitle = "Distribution of response times (0-30 days)",
+       x = "Response Time (Days)", y = "Number of Requests") +
+  theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(face = "bold", size = 10),
+        plot.subtitle = element_text(size = 8, color = "gray40"))
+```
+
+The sharp spike at 0-1 days shows Boston's 311 system resolves most requests almost immediately—likely automated closures or quick fixes. However, the gap between the median (1 day) and mean (2.4 days) tells a deeper story: while half of all cases close within a day, the long tail of slower cases pulls the average higher. This histogram only shows requests up to 30 days; the 30,700+ "zombie cases" taking over a year aren't even visible here.
+
+---
+
+**Lessons:** While Boston's 311 system resolves most requests quickly, the data reveals important questions about equity and efficiency. The 30,700+ "zombie cases" and 3,114 impossible records suggest that aggregate statistics can mask service delivery challenges worth investigating further.
+
+\newpage
+
+## Appendix A: Data Dictionary
+
+### Original Variables Used
+
+| Variable | Description |
+|:---------|:------------|
+| `OPEN_DT` | Date and time the request was opened |
+| `CLOSED_DT` | Date and time the request was closed |
+| `REASON` | Broad category of the service request |
+| `TYPE` | Specific type of service request |
+| `BRA_PD` | Boston neighborhood (Planning District) |
+| `SOURCE` | How the request was submitted |
+
+### New Variables Created
+
+| Variable | Description | How Created |
+|:---------|:------------|:------------|
+| `response_time_days` | Days between open and close | `as.numeric(CLOSED_DT - OPEN_DT)` |
+| `day_of_week` | Day of week request was opened | `wday(OPEN_DT, label = TRUE)` |
+| `case_status` | Data quality flag | `case_when()` |
+
+\newpage
+
+## Appendix B: Annotated R Syntax
+
+```{r show-code, echo=TRUE, eval=FALSE}
+# SETUP
+library(tidyverse); library(lubridate); library(scales)
+boston_311 <- read_csv("boston_311.csv.csv")
+
+# CREATE NEW VARIABLES
+boston_311 <- boston_311 %>%
+  mutate(
+    response_time_days = as.numeric(CLOSED_DT - OPEN_DT),
+    day_of_week = wday(OPEN_DT, label = TRUE, abbr = FALSE),
+    case_status = case_when(
+      response_time_days < 0 ~ "Impossible",
+      response_time_days > 365 ~ "Zombie",
+      is.na(response_time_days) ~ "Still Open",
+      TRUE ~ "Valid"))
+
+# FUN FACTS 1-2: Response time stats & top neighborhoods
+median(boston_311$response_time_days, na.rm = TRUE)
+mean(boston_311$response_time_days, na.rm = TRUE)
+boston_311 %>% filter(!is.na(BRA_PD)) %>% count(BRA_PD, sort = TRUE) %>% head(5)
+
+# FUN FACTS 3-4: Categories & day of week
+n_distinct(boston_311$REASON)
+boston_311 %>% count(day_of_week) %>% mutate(pct = n / sum(n) * 100)
+
+# FUN FACTS 5-7: Max response, impossible cases, zombie cases
+max(boston_311$response_time_days, na.rm = TRUE)
+boston_311 %>% filter(response_time_days < 0) %>% nrow()
+boston_311 %>% filter(response_time_days > 365) %>% nrow()
+
+# FUN FACT 8: Top request sources
+table(boston_311$SOURCE)
+
+# FIGURE 1: Mean Response Time by Neighborhood
+top_neighborhoods <- boston_311 %>%
+  filter(!is.na(BRA_PD)) %>% 
+  count(BRA_PD, sort = TRUE) %>% 
+  head(10) %>% 
+  pull(BRA_PD)
+
+neighborhood_stats <- boston_311 %>%
+  filter(BRA_PD %in% top_neighborhoods, 
+         response_time_days >= 0, 
+         response_time_days <= 365) %>%
+  group_by(BRA_PD) %>%
+  summarise(
+    mean_response = mean(response_time_days, na.rm = TRUE),
+    request_count = n()
+  )
+
+neighborhood_stats %>%
+  ggplot(aes(x = reorder(BRA_PD, mean_response), y = mean_response)) +
+  geom_col(aes(fill = mean_response), color = "white", width = 0.7) +
+  geom_text(aes(label = paste0(round(mean_response, 1), " days")), 
+            hjust = -0.1, size = 2.5, fontface = "bold") +
+  geom_text(aes(label = paste0("n=", format(request_count, big.mark = ","))), 
+            y = 0.02, hjust = 0, size = 2, color = "white") +
+  coord_flip() +
+  scale_fill_gradient(low = "#9B59B6", high = "#E74C3C", guide = "none") +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.18))) +
+  labs(title = "Average Response Times Vary Across Neighborhoods",
+       subtitle = "Top 10 neighborhoods by volume",
+       x = NULL, y = "Mean Response Time (Days)") +
+  theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(face = "bold", size = 10),
+        plot.subtitle = element_text(size = 8, color = "gray40"),
+        axis.text.y = element_text(size = 8, face = "bold"),
+        panel.grid.major.y = element_blank())
+
+# FIGURE 2: Response Time Distribution
+valid_responses <- boston_311$response_time_days[
+  boston_311$response_time_days >= 0 & 
+  boston_311$response_time_days <= 30]
+
+median_val <- median(valid_responses, na.rm = TRUE)
+mean_val <- mean(valid_responses, na.rm = TRUE)
+
+boston_311 %>%
+  filter(response_time_days >= 0, response_time_days <= 30) %>%
+  ggplot(aes(x = response_time_days)) +
+  geom_histogram(binwidth = 1, fill = "#9B59B6", color = "white") +
+  geom_vline(xintercept = median_val, linetype = "dashed", 
+             color = "#E74C3C", linewidth = 1) +
+  geom_vline(xintercept = mean_val, linetype = "dotted", 
+             color = "#3498DB", linewidth = 1) +
+  annotate("label", x = 15, y = 500000, 
+           label = paste0("Median = ", round(median_val, 1), " day"), 
+           fill = "#E74C3C", color = "white", 
+           fontface = "bold", size = 2.5, label.size = 0) +
+  annotate("label", x = 15, y = 380000, 
+           label = paste0("Mean = ", round(mean_val, 1), " days"), 
+           fill = "#3498DB", color = "white", 
+           fontface = "bold", size = 2.5, label.size = 0) +
+  scale_x_continuous(breaks = seq(0, 30, 5)) +
+  scale_y_continuous(labels = scales::comma) +
+  labs(title = "Most Requests Resolved Within One Week",
+       subtitle = "Distribution of response times (0-30 days)",
+       x = "Response Time (Days)", y = "Number of Requests") +
+  theme_minimal(base_size = 9) +
+  theme(plot.title = element_text(face = "bold", size = 10),
+        plot.subtitle = element_text(size = 8, color = "gray40"))
+```
